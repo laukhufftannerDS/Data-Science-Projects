@@ -1,4 +1,4 @@
---- 
+---
 title: "Math 490 Statistical Learning Project"
 output:
   word_document: default

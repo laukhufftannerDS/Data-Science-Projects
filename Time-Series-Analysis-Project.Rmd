@@ -3,7 +3,6 @@ title: "Math 342 Final Project: Sea Temperatures"
 output: word_document
 date: "2025-04-29"
 ---
-
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```

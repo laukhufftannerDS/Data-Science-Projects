@@ -1,0 +1,672 @@
+---
+title: "Math 490 Statistical Learning Project"
+output:
+  word_document: default
+  html_document: default
+date: "2026-04-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(kknn)
+library(MASS)
+library(nnet)
+library(poissonreg)
+library(discrim)
+```
+
+```{r}
+ej <- read_csv("EJSCREEN_2023_BG_with_AS_CNMI_GU_VI.csv")
+```
+
+Data Cleaning:
+```{r}
+ej_clean <- ej %>%
+  filter(
+    !is.na(PM25), 
+    !is.na(LOWINCPCT), 
+    !is.na(PTRAF), 
+    !is.na(PEOPCOLORPCT), 
+    !is.na(REGION),
+    !is.na(CANCER),
+    !is.na(NPL_CNT),
+    !is.na(DEMOGIDX_2),
+    !is.na(CANCER),
+    !is.na(DSLPM),
+    !is.na(RSEI_AIR)
+  ) %>%
+  mutate(
+    REGION = as.factor(REGION),
+    HIGH_POC = as.factor(ifelse(PEOPCOLORPCT > 0.5, "High", "Low"))
+  )
+set.seed(1)
+n <- nrow(ej_clean)
+train_indices <- sample(1:n, size = floor(0.75 * n))
+train_data <- ej_clean[train_indices, ]
+test_data  <- ej_clean[-train_indices, ]
+```
+
+This starts cleaning the data by first removing all missing values from each variable that will be used because the models used are unable to handle them. Then, I mutated region as a factor so that R treats them as a categorical variable and does not rank them based on value. I also created the variable HIGH_POC so that it categorizes communities with a higher percentage of POC as high and vice versa to use later. I then set the seed to 1 so that all the data is reproducible, and my values do not change every time I reload the data. Finally, I split the data into two groups. The first makes up 75% of the data and it is used to train the models I create and the last 25% is tested on with the models. This makes sure that my models are not overfit to the data and allows for my models to be more realistic when trying to fit them.
+
+To start the statistical learning project, I selected 5 target variables for modeling. The first variable is PM25 which is a quantitative variable looking at particulate matter 2.5 levels. It is an environmental indicator with a mean of 8.082 and median of 8.2 in my dataset. The next variable I am looking at is another quantitative variable, the demographic index. It is a composite index of social vulnerability that ranges from 0 to 1 with a mean of 0.3482. My third variable is the air toxics cancer risk, which is a quantitative variable that predicts the risk level based on environmental and demographic factors. My fourth variable is the EPA region. This is a categorical variable that includes 10 regions and will be used to classify groups into their EPA region based on environmental profiles. Finally, the last variable will be the proximity to national priorities list sites (PNPL). This is a quantitative variable looking at this distance from the sites. 
+
+I am going to take the first variable (PM25) to begin modeling. It has values ranging from 2.39 to 12.137, with a mean of 8.08 and median of 8.2. This indicates that it has a fairly symmetric distribution with some slight left skewing or outliers at the lower end. Some variables that could be predictors of this value are region, low income percentage, and traffic proximity. My previous analysis showed that communities with higher poverty rates face higher EJ index values, would could also correlate with higher pollution levels like PM2.5. The 5 models I am going to use for this variable are simple linear regression, multiple linear regression, polynomial regression, KNN regression, and multiple linear regression with interactions.
+
+Simple Linear Regression:
+```{r}
+m1_slr <- lm(PM25 ~ LOWINCPCT, data = train_data)
+summary(m1_slr)
+test_data$pred_slr <- predict(m1_slr, newdata = test_data)
+test_mse_slr <- mean((test_data$PM25 - test_data$pred_slr)^2)
+print(paste("Test MSE for SLR:", round(test_mse_slr, 4)))
+ggplot(test_data, aes(x = pred_slr, y = PM25)) +
+  geom_point(alpha = 0.1) +
+  geom_abline(color = "blue")
+```
+I chose to start with a simple linear regression to get a baseline to build off of for future models. I chose to compare poverty levels with pollution to see if there is an independent relationship there and compare it to the other models. The simple linear regression model shows a statistically significant positive relationship between the percentage of low income individuals and PM2.5 due to the small p-value of 2.2e-16. This trend shows that poorer communities face higher pollution levels, but the low R-squared value indicates that poverty is not the main causation of the PM2.5 levels as only 0.49% of the variation is explained by poverty. So the relationship between the two is very weak, and the causation is likely due to other environmental or geographic factors. The next model will include more variables to see if they can increase the R-squared value. 
+
+Multiple Linear Regression:
+```{r}
+train_data$REGION <- as.factor(train_data$REGION)
+test_data$REGION <- as.factor(test_data$REGION)
+m2_mlr <- lm(PM25 ~ LOWINCPCT + REGION + PTRAF, data = train_data)
+summary(m2_mlr)
+pred_mlr <- predict(m2_mlr, newdata = test_data)
+test_mse_mlr <- mean((test_data$PM25 - pred_mlr)^2)
+print(paste("Test MSE for MLR:", round(test_mse_mlr, 4)))
+ggplot(test_data, aes(x = pred_mlr, y = PM25)) +
+  geom_point(alpha = 0.1) +
+  geom_abline(color = "blue")
+```
+After the simple linear regression model, I wanted to try a multiple linear regression model to account for geographic and infrastructure based variables. I know that geographic location and the amount of infrastructure, like traffic, can affect the pollution levels, so I wanted to see the relationship. This model shows progress by adding region and traffic. The test MSE is lower, and the R-squared value climbed to 26% meaning a quarter of the variation is explained by the variables. This model also shows that low income percentage is not as effective by the p-value and it is no longer statistically significant after region and traffic are added. This indicates that high PM2.5 levels are not caused by poverty, but it is a consequence of poorer areas being located in more polluted spaces. The next model is going to polynomial term because the data is not a straight line, and this will allow it to bend to fit the curve better. 
+
+Polynomial Regression:
+```{r}
+m3_poly <- lm(PM25 ~ LOWINCPCT + REGION + poly(PTRAF, 2), data = train_data)
+summary(m3_poly)
+pred_poly <- predict(m3_poly, newdata = test_data)
+test_mse_poly <- mean((test_data$PM25 - pred_poly)^2)
+print(paste("Test MSE for Polynomial Model:", round(test_mse_poly, 4)))
+ggplot(train_data, aes(x = PTRAF, y = PM25)) +
+  geom_point(alpha = 0.02) +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 2), color = "blue", se = TRUE)
+```
+After adding more significant variables, I wanted to try a polynomial model because the data is non-linear. I used the traffic component because I wanted to see the relationship of distance from traffic and pollution. This results in a slightly better model than the polynomial regression, but still not good. The test MSE is slightly reduced to 1.55 and the R-squared value increased to 0.27. The traffic levels between this model and the MLR have significant p-values confirming that the relationship between traffic proximity and PM2.5 levels are non-linear. The curve in the data helps to predict the pollution better than a straight line would. The low income percentage is also statistically significant again, and it has a negative coefficient. However, this is mostly likely due to other correlations like rural areas having high poverty and lower pollution. Due to the nature of this data, I am going to look at a non-parametric model next and use KNN regression. 
+
+KNN Regression:
+```{r}
+model4_knn <- kknn(PM25 ~ LOWINCPCT + REGION + PTRAF, 
+                   train = train_data, 
+                   test = test_data, 
+                   k = 15, 
+                   kernel = "rectangular")
+pred_knn <- fitted(model4_knn)
+mse_knn <- mean((test_data$PM25 - pred_knn)^2)
+r2_knn <- 1 - (sum((test_data$PM25 - pred_knn)^2) / sum((test_data$PM25 - mean(test_data$PM25))^2))
+cat("KNN Regression Summary:\n")
+cat("Test MSE: ", round(mse_knn, 4), "\n")
+cat("R-squared: ", round(r2_knn, 4), "\n")
+results_knn <- data.frame(
+  Actual = test_data$PM25,
+  Predicted = pred_knn
+)
+ggplot(results_knn, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.05) +
+  geom_abline(intercept = 0, slope = 1, color = "blue")
+```
+After looking at the previous models that stick to formulas, I wanted to try a KNN regression because the data does not have a form that I could fit an equation to. This method allows me to predict outcomes based on the location of data points. This model is the best performing yet, but it still does not capture much of the variance with an R-squared value of about 0.3. It also lowers the MSE. The KNN model working better shows that PM2.5 levels are based on more specific characteristics than one formula applying to the entire country. This means that PM2.5 levels are patchy and cluster in specific areas rather than an equal amount spread around. 
+
+Multiple Linear Regression w/ Interactions:
+```{r}
+m5_int <- lm(PM25 ~ LOWINCPCT * PEOPCOLORPCT + PTRAF + REGION, data = train_data)
+summary(m5_int)
+pred_int <- predict(m5_int, newdata = test_data)
+test_mse_int <- mean((test_data$PM25 - pred_int)^2)
+print(paste("Test MSE for Interaction Model:", round(test_mse_int, 4)))
+train_data_vis <- train_data %>%
+  mutate(POC_Group = cut(PEOPCOLORPCT, 
+                         breaks = quantile(PEOPCOLORPCT, probs = c(0, 0.33, 0.66, 1), na.rm = TRUE),
+                         labels = c("Low POC", "Medium POC", "High POC")))
+ggplot(train_data_vis, aes(x = LOWINCPCT, y = PM25, color = POC_Group)) +
+  geom_point(data = slice_sample(train_data_vis, n = 5000), alpha = 0.1) +
+  geom_smooth(method = "lm", se = TRUE)
+```
+For my final model, I wanted to look at the interaction between poverty and percentage of people of color on the PM2.5 levels in the community. The p-value here shows that the interaction between the two was highly significant. The graph also shows that areas with a higher POC percentage face higher PM2.5 levels across all incomes, but especially at low income. This model also happens to be the most successful when it comes to modeling, however, it still does not do a good job. It has and MSE of 1.45 and an R-squared of 0.32. This means it only captures 32% of the variance within the data. While it does not model well, it does highlight that the relationship between poverty and PM2.5 levels are not uniform. Instead, it shows that the socioeconomic status and race intersect to create more environmental inequality. This makes this model a good tool to identify communities that are more vulnerable.
+
+```{r}
+pm25_folds <- vfold_cv(ej_clean, v = 10)
+lm_spec <- linear_reg() %>% set_engine("lm")
+m1_recipe <- recipe(PM25 ~ LOWINCPCT, data = ej_clean)
+m1_wflow <- workflow() %>% add_recipe(m1_recipe) %>% add_model(lm_spec)
+m1_cv_results <- m1_wflow %>% fit_resamples(resamples = pm25_folds)
+m1_metrics <- collect_metrics(m1_cv_results)
+m1_cv_mse <- (m1_metrics %>% filter(.metric == "rmse") %>% pull(mean))^2
+m2_recipe <- recipe(PM25 ~ LOWINCPCT + REGION + PTRAF, data = ej_clean)
+m2_wflow <- workflow() %>% add_recipe(m2_recipe) %>% add_model(lm_spec)
+m2_cv_results <- m2_wflow %>% fit_resamples(resamples = pm25_folds)
+m2_metrics <- collect_metrics(m2_cv_results)
+m2_cv_mse <- (m2_metrics %>% filter(.metric == "rmse") %>% pull(mean))^2
+m3_recipe <- recipe(PM25 ~ LOWINCPCT + REGION + PTRAF, data = ej_clean) %>%
+  step_poly(PTRAF, degree = 2)
+m3_wflow <- workflow() %>% add_recipe(m3_recipe) %>% add_model(lm_spec)
+m3_cv_results <- m3_wflow %>% fit_resamples(resamples = pm25_folds)
+m3_metrics <- collect_metrics(m3_cv_results)
+m3_cv_mse <- (m3_metrics %>% filter(.metric == "rmse") %>% pull(mean))^2
+m5_recipe <- recipe(PM25 ~ LOWINCPCT + PEOPCOLORPCT + PTRAF + REGION, data = ej_clean) %>%
+  step_interact(terms = ~ LOWINCPCT:PEOPCOLORPCT)
+m5_wflow <- workflow() %>% add_recipe(m5_recipe) %>% add_model(lm_spec)
+m5_cv_results <- m5_wflow %>% fit_resamples(resamples = pm25_folds)
+m5_metrics <- collect_metrics(m5_cv_results)
+m5_cv_mse <- (m5_metrics %>% filter(.metric == "rmse") %>% pull(mean))^2
+pm25_comparison <- data.frame(
+  Model = c("SLR", "MLR", "Polynomial", "Interaction"),
+  CV_Estimated_MSE = c(m1_cv_mse, m2_cv_mse, m3_cv_mse, m5_cv_mse)
+)
+knitr::kable(pm25_comparison)
+```
+For my first variable in this project I modeled PM2.5. I wanted to explore the relationship with its socioeconomic status, geography, and infrastructure through 5 different models. I started with SLR using low income percentage as a predictor and found an R-squared of 0.005. and an MSE of 2.09. Then I tried an MLR with predictors low income percentage, region, and ptraf. This gave me an R-squared of 0.26, and an MSE of 1.57. After that I did a polynomial regression with the same predictors, using ptraf as my polynomial. This improved the model to have an R-squared of 0.27, and MSE of 1.55. My fourth model was a KNN and I found an R-squared of 0.297 and MSE of 1.48. Finally I did an MLR with an interaction between low income percentage and people of color percentage to get my best model. It had an R-squared of 0.32 and MSE of 1.45. To make sure this was my best result, I did a 10-fold cross validation of all of my results with the exception of KNN because it took too long to run. These results confirmed that the MRL with interactions was the best model. No model I had for this was able to capture the data super well, and my best model only caught 32% of the variance. However, these models do show that region, proximity to traffic, and the intersection of race and class are predictors of PM2.5 exposure. 
+
+The next variable that I will begin modeling the demographic index. It is a measure from 0 to 1 looking at socioeconomic factors that represent a community's social vulnerability. It is going to be used as a quantitative variable to look at the intensity of the vulnerability. I will be looking at how variables like PM2.5 and traffic proximity correlate to social vulnerability. The 5 models I will use are simple linear regression, multiple linear regression, polynomial regression, KNN regression, and multiple linear regression with interactions.
+
+Simple Linear Regression:
+```{r}
+m1_slr_demo <- lm(DEMOGIDX_2 ~ PM25, data = train_data)
+summary(m1_slr_demo)
+pred_slr_demo <- predict(m1_slr_demo, newdata = test_data)
+test_mse_slr_demo <- mean((test_data$DEMOGIDX_2 - pred_slr_demo)^2)
+print(paste("Test MSE for Demographic Index SLR:", round(test_mse_slr_demo, 5)))
+ggplot(train_data, aes(x = PM25, y = DEMOGIDX_2)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = "lm", color = "red")
+```
+I chose to start with simple regression again to create a baseline to compare against. I wanted to see the relationship between demographic index and pollution in the air. I found that the relationship between them is statistically significant due to the small p-value. However, the as the PM2.5 value increases, the demographic index does not increase by much. The R-squared value is also small, and only 5.4% of the variation in the data is explained by PM2.5. This means that there are other factors that influence the demographic index. Overall, this model is a weak predictor. 
+
+Multiple Linear Regression:
+```{r}
+m2_mlr_demo <- lm(DEMOGIDX_2 ~ PM25 + PTRAF + LOWINCPCT + REGION, data = train_data)
+summary(m2_mlr_demo)
+pred_mlr_demo <- predict(m2_mlr_demo, newdata = test_data)
+test_mse_mlr_demo <- mean((test_data$DEMOGIDX_2 - pred_mlr_demo)^2)
+print(paste("Test MSE for Demographic Index MLR:", round(test_mse_mlr_demo, 5)))
+ggplot(test_data, aes(x = pred_mlr_demo, y = DEMOGIDX_2)) +
+  geom_point(alpha = 0.05) +
+  geom_abline(intercept = 0, slope = 1, color = "red")
+```
+For this model I wanted to add other variables that would impact the demographic data. So, I added the traffic, region, and low income percentage to see the impact. This model is a much better fit for the data. By adding the new variables, nearly 68% of the variance is explained by the model as seen in the R-squared value. This confirms that the demographic index is tied to more than just pollution, but also socioeconomic and regional factors. The slope for low income percentage is also significantly larger than the others indicating that it is the best predictor of social vulnerability. The MSE within this dataset is also a lot lower further proving that it is more accurate than the baseline above.
+
+Polynomial Regression:
+```{r}
+m3_poly_demo <- lm(DEMOGIDX_2 ~ poly(LOWINCPCT, 2) + PM25 + PTRAF + REGION, 
+                   data = train_data)
+summary(m3_poly_demo)
+pred_poly_demo <- predict(m3_poly_demo, newdata = test_data)
+test_mse_poly_demo <- mean((test_data$DEMOGIDX_2 - pred_poly_demo)^2)
+print(paste("Test MSE for Demographic Index Polynomial Model:", round(test_mse_poly_demo, 5)))
+ggplot(train_data, aes(x = LOWINCPCT, y = DEMOGIDX_2)) +
+  geom_point(alpha = 0.05,) +
+  geom_smooth(method = "lm", color = "red", formula = y ~ poly(x, 2))
+```
+I chose to do a polynomial regression next with low income percentage as my polynomial variable because I wanted to see the relationship. I chose low income percentage because it had the largest impact on the multiple regression model. I found that the relationship between low income and social vulnerability to by curved due to the low p-value. This also caused the model to be just slightly better than the previous, capturing 67.99% of the variance within the data compared to 67.96%. The MSE is also just slightly better than before. 
+
+KNN Regression:
+```{r}
+train_knn <- train_data %>% 
+  dplyr::select(DEMOGIDX_2, PM25, PTRAF, LOWINCPCT)
+test_knn  <- test_data %>% 
+  dplyr::select(PM25, PTRAF, LOWINCPCT)
+model4_knn_demo <- kknn(DEMOGIDX_2 ~ ., 
+                        train = train_knn, 
+                        test = test_knn, 
+                        k = 15, 
+                        kernel = "rectangular")
+pred_knn_demo <- fitted(model4_knn_demo)
+mse_knn_demo <- mean((test_data$DEMOGIDX_2 - pred_knn_demo)^2)
+print(paste("Test MSE for KNN Regression:", round(mse_knn_demo, 5)))
+r2_knn_demo <- 1 - (sum((test_data$DEMOGIDX_2 - pred_knn_demo)^2) / 
+                    sum((test_data$DEMOGIDX_2 - mean(test_data$DEMOGIDX_2))^2))
+print(paste("R-squared for KNN Regression:", round(r2_knn_demo, 4)))
+results_knn <- data.frame(
+  Actual = test_data$DEMOGIDX_2,
+  Predicted = pred_knn_demo
+)
+  ggplot(results_knn, aes(x = Predicted, y = Actual)) +
+  geom_point(alpha = 0.05) +
+  geom_abline(intercept = 0, slope = 1, color = "red")
+```
+I decided to try a KNN regression to see how effective the linear relationships were. The data has a clear trend, so I was expecting it to perform similarly to the precious. I found the KNN accounted for 67.44% of the variance in the data and has a small MSE of 0.016. This shows that the data has a mostly linear trend, and complex parametric models are not needed to get a good fit. 
+
+Multiple Linear Regression w/ Interactions:
+```{r}
+m_interaction_demo <- lm(DEMOGIDX_2 ~ PM25 * LOWINCPCT + PTRAF + REGION, 
+                         data = train_data)
+summary(m_interaction_demo)
+pred_int_demo <- predict(m_interaction_demo, newdata = test_data)
+mse_int_demo <- mean((test_data$DEMOGIDX_2 - pred_int_demo)^2)
+print(paste("Test MSE for MLR Interaction Model:", round(mse_int_demo, 5)))
+ggplot(train_data, aes(x = PM25, y = DEMOGIDX_2)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = "lm", color = "red", se = FALSE)
+```
+I decided to go back to the multiple linear regression model because it had been my best performing so far. I wanted to add an interaction component between PM2.5 and low income percentage to see if the relationship between air pollution and demographic vulnerability is amplified in low income areas. My findings show that in areas with low income, the effect of air pollution is higher on the demographic index. This model is also the best result I have found so far. It has the lowest MSE of 0.015. It also gets captures 68.07% of the variance within the model as seen by the R-squared value. This means that it is a good model and predictor for the data. 
+
+```{r}
+demo_folds <- vfold_cv(ej_clean, v = 10)
+d1_recipe <- recipe(DEMOGIDX_2 ~ PM25, data = ej_clean)
+d1_wflow <- workflow() %>% add_recipe(d1_recipe) %>% add_model(lm_spec)
+d1_cv_results <- d1_wflow %>% fit_resamples(resamples = demo_folds)
+d1_metrics <- collect_metrics(d1_cv_results)
+d1_cv_mse <- (d1_metrics %>% filter(.metric == "rmse") %>% pull(mean))^2
+d2_recipe <- recipe(DEMOGIDX_2 ~ PM25 + PTRAF + LOWINCPCT + REGION, data = ej_clean)
+d2_wflow <- workflow() %>% add_recipe(d2_recipe) %>% add_model(lm_spec)
+d2_cv_results <- d2_wflow %>% fit_resamples(resamples = demo_folds)
+d2_metrics <- collect_metrics(d2_cv_results)
+d2_cv_mse <- (d2_metrics %>% filter(.metric == "rmse") %>% pull(mean))^2
+d3_recipe <- recipe(DEMOGIDX_2 ~ PM25 + PTRAF + LOWINCPCT + REGION, data = ej_clean) %>%
+  step_poly(LOWINCPCT, degree = 2)
+d3_wflow <- workflow() %>% add_recipe(d3_recipe) %>% add_model(lm_spec)
+d3_cv_results <- d3_wflow %>% fit_resamples(resamples = demo_folds)
+d3_metrics <- collect_metrics(d3_cv_results)
+d3_cv_mse <- (d3_metrics %>% filter(.metric == "rmse") %>% pull(mean))^2
+d5_recipe <- recipe(DEMOGIDX_2 ~ PM25 + LOWINCPCT + PTRAF + REGION, data = ej_clean) %>%
+  step_interact(terms = ~ PM25:LOWINCPCT)
+d5_wflow <- workflow() %>% add_recipe(d5_recipe) %>% add_model(lm_spec)
+d5_cv_results <- d5_wflow %>% fit_resamples(resamples = demo_folds)
+d5_metrics <- collect_metrics(d5_cv_results)
+d5_cv_mse <- (d5_metrics %>% filter(.metric == "rmse") %>% pull(mean))^2
+demo_comparison <- data.frame(
+  Model = c("SLR", "MLR", "Polynomial", "Interaction"),
+  CV_Estimated_MSE = c(d1_cv_mse, d2_cv_mse, d3_cv_mse, d5_cv_mse)
+)
+knitr::kable(demo_comparison)
+```
+For this variable, I wanted to model the Demographic Index. This is a measure of a community's social vulnerability on a scale from 0 to 1. My goal was to see if environmental factors like pollution or traffic can predict this, or if it is solely by socioeconomic factors. I started my model using SLR with PM2.5 as my predictor and found an R-squared value of 0.055 and MSE of 0.046. Then I moved onto MLR with predictors PM2.5, ptraf, lowincpct, and region. This made the model a lot better and had an R-squared of 0.68 and MSE of 0.015. Then I created a polynomial regression with lowincpct as my polynomial variable. I got the same R-squared and MSE with this. After that I tried a KNN and got an R-squared of 0.67 and MSE of 0.016. Finally, I tried a MLR with interactions and created an interaction between PM2.5 and lowincpct to get my best model that has an R-squared of 0.68 and MSE of 0.015. This model is slightly better than the regular MLR, so I ran a 10-fold cross validation to confirm the results. I found that it is just slightly better. This data also showed me that income is the biggest predictor which is why I used it for my polynomial and in my interaction. It has the steepest slope out of all the variables so income is one of the biggest predictors for Demogrpahic Index score. 
+
+The third variable I will be exploring is the air toxics cancer risk (CANCER). This variable represents the modeled lifetime cancer risk per million people. This also takes my study from looking at social vulnerability to the health risks that is associated with them. I am going to start this by creating a simple regression model.
+
+Simple Linear Regression:
+```{r}
+m1_cancer_slr <- lm(CANCER ~ PM25, data = train_data)
+summary(m1_cancer_slr)
+pred_cancer_slr <- predict(m1_cancer_slr, newdata = test_data)
+test_mse_cancer_slr <- mean((test_data$CANCER - pred_cancer_slr)^2)
+print(paste("Test MSE for Cancer Risk SLR:", round(test_mse_cancer_slr, 5)))
+ggplot(train_data, aes(x = PM25, y = CANCER)) +
+  geom_point(alpha = 0.05,) +
+  geom_smooth(method = "lm", color = "darkred")
+```
+I decided to start with a simple linear regression model once again because I like the baseline it creates when looking at the relationship between two variables. In this case its the cancer risk with air pollutants. I found an R-squared value of 0.18 which means roughly 18% of the variance in the model is captured. The p-value also shows that it is statistically significant. Looking at the coefficients, for every 1 unit increase in the PM2.5 levels, the cancer risk increases by about 2.5 in a million people. The best way to improve on this model is to include more variables. 
+
+Multiple Linear Regression:
+```{r}
+m2_cancer_mlr <- lm(CANCER ~ PM25 + DSLPM + PTRAF + RSEI_AIR + LOWINCPCT, 
+                    data = train_data)
+summary(m2_cancer_mlr)
+pred_cancer_mlr <- predict(m2_cancer_mlr, newdata = test_data)
+test_mse_cancer_mlr <- mean((test_data$CANCER - pred_cancer_mlr)^2, na.rm = TRUE)
+print(paste("Test MSE for Cancer Risk MLR:", round(test_mse_cancer_mlr, 5)))
+results_cancer_mlr <- data.frame(
+  Actual = test_data$CANCER,
+  Predicted = pred_cancer_mlr
+)
+ggplot(results_cancer_mlr, aes(x = Predicted, y = Actual)) +
+  geom_point(alpha = 0.05) +
+  geom_abline(intercept = 0, slope = 1, color = "darkred")
+```
+This model improves upon the previous. It shows that the variables I included capture more of the variance within the data as the R-squared value improved to 0.27. The test MSE also dropped  showing the model is much better. The t-value of DSLPM shows that it is another significant indicator of cancer risk along with PM2.5. I noticed that PTRAF has a negative correlation. I think this is due to it having multicollinearity with other variables, like DSLPM. The minimum and maximum of the residuals is also very off, meaning there are specific communities the model struggles to predict.
+
+Polynomial Regression:
+```{r}
+m3_cancer_poly <- lm(CANCER ~ poly(PM25, 2) + DSLPM + RSEI_AIR + LOWINCPCT, 
+                     data = train_data)
+summary(m3_cancer_poly)
+pred_cancer_poly <- predict(m3_cancer_poly, newdata = test_data)
+test_mse_cancer_poly <- mean((test_data$CANCER - pred_cancer_poly)^2, na.rm = TRUE)
+print(paste("Test MSE for Cancer Polynomial Model:", round(test_mse_cancer_poly, 5)))
+results_cancer_poly <- data.frame(
+  Actual = test_data$CANCER,
+  Predicted = pred_cancer_poly
+)
+ggplot(results_cancer_poly, aes(x = Predicted, y = Actual)) +
+  geom_point(alpha = 0.05) + 
+  geom_abline(intercept = 0, slope = 1, color = "darkred")
+```
+I chose to do a polynomial model next with PM2.5 as my polynomial because it had the highest t-value. The data shows that PM2.5 does not have a linear relationship with cancer risk. This model is also a little bit better than the previous due to this. The test MSE dropped to 45.84, and the R-squared value is now 0.27. I now want to try KNN regression to see how the data performs with a non parametric model. 
+
+KNN Regression:
+```{r}
+m4_knn_cancer <- kknn(CANCER ~ PM25 + DSLPM + RSEI_AIR + LOWINCPCT, 
+                         train = train_data, 
+                         test = test_data, 
+                         k = 15, 
+                         kernel = "rectangular")
+pred_knn_cancer <- fitted(m4_knn_cancer)
+mse_knn_cancer <- mean((test_data$CANCER - pred_knn_cancer)^2, na.rm = TRUE)
+r2_knn_cancer <- 1 - (sum((test_data$CANCER - pred_knn_cancer)^2, na.rm = TRUE) / 
+                      sum((test_data$CANCER - mean(test_data$CANCER, na.rm = TRUE))^2))
+cat("Test MSE: ", round(mse_knn_cancer, 4), "\n")
+cat("R-squared: ", round(r2_knn_cancer, 4))
+results_knn_cancer <- data.frame(
+  Actual = test_data$CANCER,
+  Predicted = pred_knn_cancer
+)
+ggplot(results_knn_cancer, aes(x = Predicted, y = Actual)) +
+  geom_point(alpha = 0.05) +
+  geom_abline(intercept = 0, slope = 1, color = "darkred")
+```
+This model is the best I have tried to far. I tried it because the data is mostly clustered in one area. I found it to have an R-squared of 0.37, and a test MSE of 39.87. This improves on the previous model's ability to capture the variance by 10% and lowers the test MSE by 6. The next model I want to try is Poisson regression. 
+
+Poisson Regression:
+```{r}
+m5_poisson_cancer <- glm(CANCER ~ PM25 + DSLPM + RSEI_AIR + LOWINCPCT, 
+                     data = train_data, 
+                     family = poisson)
+summary(m5_poisson_cancer)
+pred_poisson <- predict(m5_poisson_cancer, newdata = test_data, type = "response")
+mse_poisson <- mean((test_data$CANCER - pred_poisson)^2, na.rm = TRUE)
+r2_poisson <- cor(test_data$CANCER, pred_poisson, use = "complete.obs")^2
+cat("Poisson Regression Summary:\n")
+cat("Test MSE: ", round(mse_poisson, 4), "\n")
+cat("Pseudo R-squared: ", round(r2_poisson, 4), "\n")
+results_poisson <- data.frame(
+  Actual = test_data$CANCER,
+  Predicted = pred_poisson
+)
+ggplot(results_poisson, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.05) + 
+  geom_abline(intercept = 0, slope = 1, color = "darkred")
+```
+I wanted to try Poisson regression here because it treats data as events. This makes sense as each individual would be treated as its own event. It is also a non-linear model, and this data is not very linear, it is very clustered. The Poisson model performed very similarly to the MLR. It has a test MSE of 46.2 and R-squared value of 0.27. Overall, the model did not perform great and this is most likely due to the variance of the data being too large. The best model I found was the KNN. This indicates that the cancer risk is more dependent on local neighborhoods rather than a single formula.
+
+```{r}
+cancer_folds <- vfold_cv(ej_clean, v = 10)
+poisson_spec <- poisson_reg() %>% set_engine("glm")
+c1_recipe <- recipe(CANCER ~ PM25, data = ej_clean)
+c1_wflow <- workflow() %>% add_recipe(c1_recipe) %>% add_model(lm_spec)
+c1_cv_results <- c1_wflow %>% fit_resamples(resamples = cancer_folds)
+c1_cv_mse <- (collect_metrics(c1_cv_results) %>% filter(.metric == "rmse") %>% pull(mean))^2
+c2_recipe <- recipe(CANCER ~ PM25 + DSLPM + RSEI_AIR + LOWINCPCT, data = ej_clean)
+c2_wflow <- workflow() %>% add_recipe(c2_recipe) %>% add_model(lm_spec)
+c2_cv_results <- c2_wflow %>% fit_resamples(resamples = cancer_folds)
+c2_cv_mse <- (collect_metrics(c2_cv_results) %>% filter(.metric == "rmse") %>% pull(mean))^2
+c3_recipe <- recipe(CANCER ~ PM25 + DSLPM + RSEI_AIR + LOWINCPCT, data = ej_clean) %>%
+  step_poly(PM25, degree = 2)
+c3_wflow <- workflow() %>% add_recipe(c3_recipe) %>% add_model(lm_spec)
+c3_cv_results <- c3_wflow %>% fit_resamples(resamples = cancer_folds)
+c3_cv_mse <- (collect_metrics(c3_cv_results) %>% filter(.metric == "rmse") %>% pull(mean))^2
+c5_wflow <- workflow() %>% add_recipe(c2_recipe) %>% add_model(poisson_spec)
+c5_cv_results <- c5_wflow %>% fit_resamples(resamples = cancer_folds)
+c5_cv_mse <- (collect_metrics(c5_cv_results) %>% filter(.metric == "rmse") %>% pull(mean))^2
+cancer_comparison <- data.frame(
+  Model = c("SLR", "MLR", "Polynomial", "Poisson"),
+  CV_Estimated_MSE = c(c1_cv_mse, c2_cv_mse, c3_cv_mse, c5_cv_mse)
+)
+knitr::kable(cancer_comparison)
+```
+The third variable I looked at moves from social vulnerability to health risks by modeling the air toxics cancer risk. This variable models the lifetime cancer risk per million people. By looking at how air pollutants translate into health risks, we can see the physical cost of environmental inequality. I started with simple linear regression using PM2.5 as my predictor. I got an R-squared of 0.18 and an MSE of 50.37. Then, I moved onto MLR with predictors of PM2.5, DSLPM, ptraf, rsei_air, and lowincpct. This model covered 26.5% of the variance and had an MSE of 44.88. I then moved onto the polynomial model and dropped ptraf because of some of the multicollinearity I thought I was seeing. This gave me results of an R-squared of 0.269 and an MSE of 44.60. I also used PM2.5 as my polynomial. For my fourth model I went back to KNN to see if local neighboorhoods would be good predictors, and I found it was. It had an R-squared of 0.371 and an MSE of 39.87. Finally, I tried Poisson regression and got an R-squared of 0.27, and an MSE of 46.2. After getting these results, I ran them through a 10-fold cross-validation to make sure they were accurate. I found that all of the estimated MSEs went up. I decided the KNN was my best model here after looking at that information. This means that cancer risk is broken up into local clusters around the country.
+
+The fourth variable I will be looking at is region. This is a categorical variable, and I will be looking to see if there are geographical factors in cancer risk that are not fully explained by just pollution levels. I am going to start with a multinomial logistic regression, then do an LDA. After that I am going to try a QDA and KNN with k = 1. Then I am going to do a KNN with k = 25, treating cancer risk as a categorical variable with high or low risk based on the region. 
+
+Multinomial Logistic Regression:
+```{r}
+m1_region_multi <- multinom(REGION ~ PM25 + DSLPM + CANCER + PNPL, 
+                            data = train_data, 
+                            trace = FALSE)
+pred_multi <- predict(m1_region_multi, newdata = test_data)
+test_error_multi <- mean(pred_multi != test_data$REGION)
+cat("Test Error Rate:", round(test_error_multi, 4), "\n")
+cm_data <- as.data.frame(table(Actual = test_data$REGION, Predicted = pred_multi))
+ggplot(cm_data, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq)) +
+  scale_fill_gradient(low = "white", high = "steelblue")
+```
+This model is a good start for classifying region. It has an accuracy of 36.4% which is a lot better than random guessing. That would lead to an accuracy of 10%. However, that means that it is wrong about 64% of the time, so there is a lot of room for improvement. The next model I am going to try is LDA. I am using it to see if a linear combination of predictors will separate the regions better and lead to a better prediction compared to the logistic. 
+
+LDA Regression:
+```{r}
+m2_region_lda <- lda(REGION ~ PM25 + DSLPM + CANCER + PNPL, data = train_data)
+pred_lda <- predict(m2_region_lda, newdata = test_data)$class
+test_error_lda <- mean(pred_lda != test_data$REGION)
+cat("Test Error Rate:", round(test_error_lda, 4))
+lda_values <- predict(m2_region_lda, newdata = test_data)$x
+cm_lda <- as.data.frame(table(Actual = test_data$REGION, Predicted = pred_lda))
+ggplot(cm_lda, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq))
+  scale_fill_gradient(low = "white", high = "steelblue")
+```
+The LDA regression shows a slight improvement compared to the logistic. It has an error rate of 63.6%. The limitation of LDA is that it assumes the spread of pollution levels in each region is the same. This is most likely not the case for each region, so it struggles to capture the slight differences. The next model I am going to try is QDA. This will help to solve that issue because QDA does not assume there is an equal spread of data, and will capture the variance of each region better. 
+
+QDA Regression:
+```{r}
+m3_region_qda <- qda(REGION ~ PM25 + DSLPM + CANCER + PNPL, data = train_data)
+pred_qda <- predict(m3_region_qda, newdata = test_data)$class
+test_error_qda <- mean(pred_qda != test_data$REGION)
+cat("Test Error Rate:", round(test_error_qda, 4))
+cm_qda <- as.data.frame(table(Actual = test_data$REGION, Predicted = pred_qda))
+ggplot(cm_qda, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq)) +
+  scale_fill_gradient(low = "white", high = "steelblue")
+```
+The QDA model is significantly better than the LDA. It has an error rate of 58.1%. This proves that quadratic boundaries are able to better capture the data than the linear boundaries used in the LDA. This also makes sense because each region is going to be spread out on its pollution levels and not have the same levels. Some areas will have more urban or larger urban areas that will lead to higher pollution levels. 
+
+KNN Regression (k = 1):
+```{r}
+m4_region_knn1 <- kknn(REGION ~ PM25 + DSLPM + CANCER + PNPL, 
+                   train = train_data, 
+                   test = test_data, 
+                   k = 1, 
+                   kernel = "rectangular")
+pred_knn1 <- fitted(m4_region_knn1)
+test_error_knn1 <- mean(pred_knn1 != test_data$REGION)
+cat("Test Error Rate:", round(test_error_knn1, 4))
+cm_knn1 <- as.data.frame(table(Actual = test_data$REGION, Predicted = pred_knn1))
+ggplot(cm_knn1, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq)) +
+  scale_fill_gradient(low = "white", high = "steelblue")
+```
+This model is very good at predicting and the test error rate dropped to 0.147. While it is about 85% accurate, this model could very likely be overfit. Using k = 1 causes the model to be very flexible. So, to test and see how good the knn fit is, I am going to run it again with k = 25. 
+
+Logistic Model:
+```{r}
+m5_region_knn25 <- kknn(REGION ~ PM25 + DSLPM + CANCER + PNPL, 
+                   train = train_data, 
+                   test = test_data, 
+                   k = 25, 
+                   kernel = "rectangular")
+pred_knn25 <- fitted(m5_region_knn25)
+test_error_knn25 <- mean(pred_knn25 != test_data$REGION)
+cat("Test Error Rate:", round(test_error_knn25, 4))
+cm_knn25 <- as.data.frame(table(Actual = test_data$REGION, Predicted = pred_knn25))
+ggplot(cm_knn25, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq)) +
+  scale_fill_gradient(low = "white", high = "steelblue")
+```
+This knn model has a worse error rate of about 34%. This means that the previous knn was overfit and this model smoothes it out. Despite having a worse error rate, this model is a better predictor because it is not overfit. It captures the patterns of the data across regions and uses that to predict rather than applying it directly to the data used.
+
+```{r}
+region_folds <- vfold_cv(ej_clean, v = 10)
+multi_spec <- multinom_reg() %>% set_engine("nnet")
+lda_spec <- discrim_linear() %>% set_engine("MASS")
+qda_spec <- discrim_quad() %>% set_engine("MASS")
+region_recipe <- recipe(REGION ~ PM25 + DSLPM + CANCER + PNPL, data = ej_clean)
+wflow_multi <- workflow() %>% add_recipe(region_recipe) %>% add_model(multi_spec)
+res_multi <- fit_resamples(wflow_multi, resamples = region_folds)
+wflow_lda <- workflow() %>% add_recipe(region_recipe) %>% add_model(lda_spec)
+res_lda <- fit_resamples(wflow_lda, resamples = region_folds)
+wflow_qda <- workflow() %>% add_recipe(region_recipe) %>% add_model(qda_spec)
+res_qda <- fit_resamples(wflow_qda, resamples = region_folds)
+get_accuracy <- function(res) {
+  collect_metrics(res) %>% filter(.metric == "accuracy") %>% pull(mean)
+}
+region_comparison <- data.frame(
+  Model = c("Multinomial", "LDA", "QDA"),
+  CV_Accuracy = c(get_accuracy(res_multi), get_accuracy(res_lda), 
+                  get_accuracy(res_qda))
+  )
+knitr::kable(region_comparison)
+```
+For my fourth variable I moved to classification. I wanted to see if I could predict what community belongs to each EPA region based on the pollution profile it has, so using PM2.5, DSLPM, cancer risk, and PNPL as predictors. I started with a multinomial logistic model that has an accuracy of 36.3%. Then I moved to LDA with an accuracy of 36.8% and a QDA with an accuracy of 41.8%. For my last two models, I wanted to try 2 different KNN models. For the first, I set k = 1 expecting bad results and I found it had an error rate 14.7%. This is extremely accurate, but most likely overfit and too sensitive to be a good predictor. Then I tried k =25. This had an error rate of 34.1% and I decided this was my best model. It was less accurate, but it is still good at predicting and it will not be so sensitive to other data. Being able to predict region based on pollution with about 65% accuracy based on four pollution variables is very significant. This means that each region has its own distinct pollution ratios and solving these issues will require individualized plans based on the region. I also ran a K-fold cross-validation here to confirm the accuracies I found in the test MSEs.
+
+The final variable is the PNPL. My other variables look at airborne pollutants, so I wanted to see the effect of site-specific variables on cancer risk. It is a quantitative variable that looks at the distance from hazardous sites marked by the National Priorities List. I want to look at the relationship between demographic factors like income and race or location to see if they can predict a communities distance from these sit es. I am going to start by doing a simple linear regression comparing low income percentage to the sites. 
+
+Simple Linear Regression: 
+```{r}
+m1_pnpl_slr <- lm(PNPL ~ LOWINCPCT, data = train_data)
+summary(m1_pnpl_slr)
+test_data$pred_pnpl_slr <- predict(m1_pnpl_slr, newdata = test_data)
+test_mse_pnpl_slr <- mean((test_data$PNPL - test_data$pred_pnpl_slr)^2)
+print(paste("Test MSE for SLR:", round(test_mse_pnpl_slr, 4)))
+ggplot(test_data, aes(x = LOWINCPCT, y = PNPL)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = "lm", color = "purple")
+```
+The coefficient for low income percentage is 0.0008 and it has a p-value of 0.01. This means that for every 1 unit increase in the percentage of low income individuals, the proximity to a waste site increases by 0.008. The data is also statistically significant due to the low p-value, but the R-squared value is very small. So low income percentage does not explain really any of the variation of the data and it could be due to chance. Moving onto the next variable, I want to add race and region to see if that can make up for more of the variation. 
+
+Multiple Linear Regression:
+```{r}
+m2_pnpl_mlr <- lm(PNPL ~ LOWINCPCT + PEOPCOLORPCT + REGION, data = train_data)
+summary(m2_pnpl_mlr)
+pred_pnpl_mlr <- predict(m2_pnpl_mlr, newdata = test_data)
+mse_pnpl_mlr <- mean((test_data$PNPL - pred_pnpl_mlr)^2)
+cat("Test MSE for MLR:", round(mse_pnpl_mlr, 4))
+results_m2 <- data.frame(Actual = test_data$PNPL, Predicted = pred_pnpl_mlr)
+ggplot(results_m2, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.15) +
+  geom_abline(slope = 1, intercept = 0, color = "purple")
+```
+Compared to the simple linear regression, this model offers a lot of improvement. The R-squared value is now 0.065, so 6.5% of the variance is explained. The coefficient for race is 0.135, showing that as the more people of color are in a community, their proximity to a hazardous waste site also increases. The regional structure is also clear here as all the region variables are significant. The test MSE of this model aso dropped showing this model is a better predictor of the data. 
+
+Polynomial Regression:
+```{r}
+m3_pnpl_target_poly <- lm(PNPL ~ LOWINCPCT + poly(PEOPCOLORPCT,2) + REGION, data = train_data)
+summary(m3_pnpl_target_poly)
+pred_pnpl_poly <- predict(m3_pnpl_target_poly, newdata = test_data)
+mse_pnpl_poly <- mean((test_data$PNPL - pred_pnpl_poly)^2)
+print(paste("Test MSE for Polynomial Model:", round(mse_pnpl_poly, 4)))
+ggplot(train_data, aes(x = LOWINCPCT, y = PNPL)) +
+  geom_point(alpha = 0.05) +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 2), color = "purple")
+```
+This model shows the relationship between demographics and proximity to toxic sites is non-linear. We can also see that in the significance of the linear and quadratic components of people of color percent. I made that the polynomial variable because it had the largest coefficient in the previous model. The polynomial here shows that as the percentage of people of color increases, so does the proximity. As the population gets larger and larger, the increases get smaller and smaller. The R-squared of this model is also slightly better than before, along with the MSE dropping slightly. This shows that adding a curve to the line does not make it a lot better to predict, but it shows the risk levels are not a straight line. 
+
+KNN Regression:
+```{r}
+model4_knn_pnpl <- kknn(PNPL ~ LOWINCPCT + PEOPCOLORPCT + REGION, 
+                        train = train_data, 
+                        test = test_data, 
+                        k = 15, 
+                        kernel = "rectangular")
+pred_knn_pnpl <- fitted(model4_knn_pnpl)
+mse_knn_pnpl <- mean((test_data$PNPL - pred_knn_pnpl)^2, na.rm = TRUE)
+cat("Test MSE for Model 4:", round(mse_knn_pnpl, 4), "\n")
+r2_knn_pnpl <- 1 - (sum((test_data$PNPL - pred_knn_pnpl)^2) / 
+                    sum((test_data$PNPL - mean(test_data$PNPL))^2))
+cat("R-squared for Model 4:", round(r2_knn_pnpl, 4))
+results_knn <- data.frame(Actual = test_data$PNPL, Predicted = pred_knn_pnpl)
+ggplot(results_knn, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.1) +
+  geom_abline(slope = 1, intercept = 0, color = "purple")
+```
+Next, I moved to a KNN model. I wanted to try a non-parametric model. Instead of drawing a line through the data, this will look at the 15 closest values to try to model. I think it will work well because region is a large factor here. The data here is really interesting. The MSE here is worse than before. This means this relationship is more global and not based on local values. 
+
+Multiple Linear Regression w/ Interactions:
+```{r}
+m5_pnpl_target_int <- lm(PNPL ~ LOWINCPCT * PEOPCOLORPCT + REGION, data = train_data)
+summary(m5_pnpl_target_int)
+pred_pnpl_int <- predict(m5_pnpl_target_int, newdata = test_data)
+mse_pnpl_int <- mean((test_data$PNPL - pred_pnpl_int)^2)
+print(paste("Test MSE for Interaction Model:", round(mse_pnpl_int, 4)))
+ggplot(test_data, aes(x = LOWINCPCT, y = PNPL, color = PEOPCOLORPCT)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = "lm") +
+  scale_color_gradient(low = "blue", high = "red")
+```
+For my final model, I went back to the MLR but added interactions to see the interaction between low income percentage and the percentage of people of color. The interaction between the two is significant and has a coefficient of -0.05. This shows that the effect of people of color on proximity to waste sites is slightly reduced in communities that are also low income. The MSE here is the same as model 2, which means the interaction offers no predictive power. So, even that relationship is likely due to chance. It should also be noted that low income percentage is no longer statistically significant, which is likely due to the correlation between it and the people of color percentage.
+
+```{r}
+pnpl_folds <- vfold_cv(ej_clean, v = 10)
+p1_recipe <- recipe(PNPL ~ LOWINCPCT, data = ej_clean)
+p1_wflow <- workflow() %>% add_recipe(p1_recipe) %>% add_model(lm_spec)
+p1_cv_results <- p1_wflow %>% fit_resamples(resamples = pnpl_folds)
+p1_cv_mse <- (collect_metrics(p1_cv_results) %>% filter(.metric == "rmse") %>% pull(mean))^2
+p2_recipe <- recipe(PNPL ~ LOWINCPCT + PEOPCOLORPCT + REGION, data = ej_clean)
+p2_wflow <- workflow() %>% add_recipe(p2_recipe) %>% add_model(lm_spec)
+p2_cv_results <- p2_wflow %>% fit_resamples(resamples = pnpl_folds)
+p2_cv_mse <- (collect_metrics(p2_cv_results) %>% filter(.metric == "rmse") %>% pull(mean))^2
+p3_recipe <- recipe(PNPL ~ LOWINCPCT + PEOPCOLORPCT + REGION, data = ej_clean) %>%
+  step_poly(PEOPCOLORPCT, degree = 2)
+p3_wflow <- workflow() %>% add_recipe(p3_recipe) %>% add_model(lm_spec)
+p3_cv_results <- p3_wflow %>% fit_resamples(resamples = pnpl_folds)
+p3_cv_mse <- (collect_metrics(p3_cv_results) %>% filter(.metric == "rmse") %>% pull(mean))^2
+p5_recipe <- recipe(PNPL ~ LOWINCPCT + PEOPCOLORPCT + REGION, data = ej_clean) %>%
+  step_interact(terms = ~ LOWINCPCT:PEOPCOLORPCT)
+p5_wflow <- workflow() %>% add_recipe(p5_recipe) %>% add_model(lm_spec)
+p5_cv_results <- p5_wflow %>% fit_resamples(resamples = pnpl_folds)
+p5_cv_mse <- (collect_metrics(p5_cv_results) %>% filter(.metric == "rmse") %>% pull(mean))^2
+pnpl_comparison <- data.frame(
+  Model = c("SLR", "MLR", "Polynomial", "Interaction"),
+  CV_Estimated_MSE = c(p1_cv_mse, p2_cv_mse, p3_cv_mse, p5_cv_mse)
+)
+knitr::kable(pnpl_comparison)
+```
+My final variable moves away from air pollution to look at the ground. I wanted to look at proximity to national priorities list sites and see who lives closest to this dangerous sites. I thought a realistic starting place with people with a low income, so I did SLR with lowincpct as my predictor. I got a very small R-squared value and MSE of 0.08. I then moved into MLR including people of color percent and region as more predictors. I got an R-squared of 0.065 and an MSE of 0.0782. After that I tried polynomial with people of color percent as my polynomial variable because it had the largest slope and greatest impact. It improved the R-squared to 0.066 and MSE to 0.0781. Then I tried KNN with K = 15 and got an R-squared of 0.025 and MSE of 0.082. Finally, I tried MLR with an interaction between lowincpct and peopcolorpct. I kept it to MLR because it and the polynomial were very similar, so I did not want to over complicate for limited results. I got an R-squared of 0.065 and MSE of 0.0782, the same as the regular MLR. I think did a 10-fold cross validation for the results and found the polynomial was the best model. The most significant finding of this was that race has a larger impact on proximity to historic sites than low income. The KNN model doing very poorly also indicates that this is a global issue, and not limited to a few neighboorhoods like some of the other findings here. 
+
+Executive Summary Visuals:
+```{r}
+results_df <- data.frame(
+  Model = c("Random Guessing", "Initial Guess (Logit)", "Geometric Search (LDA)", 
+            "Flexible Curve (QDA)", "Neighborhood Search (KNN)"),
+  Error_Rate = c(0.90, 0.6362, 0.6303, 0.5811, 0.3409),
+  Type = c("Baseline", "Technical", "Technical", "Technical", "Best Performance")
+)
+results_df$Model <- factor(results_df$Model, levels = results_df$Model)
+ggplot(results_df, aes(x = Model, y = Error_Rate, fill = Type)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_text(aes(label = scales::percent(Error_Rate)), vjust = -0.5, fontface = "bold") +
+  scale_fill_manual(values = c("Best Performance" = "green", "Baseline" = "red", "Technical" = "blue")) +
+  labs(
+    title = "How Well Our Models Predict Geographic Regions",
+    subtitle = "Lower bars represent better accuracy. Our 'Neighborhood Search' was 3x more accurate.",
+    x = "",
+    y = "Error Rate"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 15, hjust = 1))
+plot_sample <- train_data[sample(nrow(train_data), 5000), ]
+
+ggplot(plot_sample, aes(x = DEMOGIDX_2, y = PM25)) +
+  geom_point(alpha = 0.2, color = "gray") +
+  geom_smooth(method = "gam", color = "orange", size = 1.5) +
+  labs(
+    title = "Comparison Between Social Vulnerability and Air Quality",
+    subtitle = "As a community's social vulnerability increases, air pollution levels (PM2.5) tend to rise.",
+    x = "Social Vulnerability (Demographic Index)",
+    y = "Air Pollution Level (PM2.5)"
+  ) +
+  theme_minimal()
+region_avg <- train_data %>%
+  group_by(REGION) %>%
+  summarise(Avg_PM25 = mean(PM25, na.rm = TRUE))
+ggplot(region_avg, aes(x = factor(REGION), y = Avg_PM25, fill = Avg_PM25)) +
+  geom_bar(stat = "identity") +
+  scale_fill_gradient(low = "gray", high = "steelblue") +
+  labs(
+    title = "Regional Differences in Air Quality",
+    subtitle = "Each EPA Region faces a unique environmental profile, requiring tailored local policies.",
+    x = "EPA Region",
+    y = "Average Air Pollution (PM2.5)",
+    fill = "Pollution Level"
+  ) +
+  theme_minimal()
+```
+
+

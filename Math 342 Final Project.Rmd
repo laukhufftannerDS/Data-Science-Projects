@@ -1,0 +1,110 @@
+---
+title: "Math 342 Final Project: Sea Temperatures"
+output: word_document
+date: "2025-04-29"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(forecast)
+library(mgcv)
+library(tibble)
+library(tseries)
+```
+
+```{r}
+data <- read_csv("sea-surface-temp.csv", skip = 6,
+                 locale = locale(encoding = "UTF-8"))
+cleaned_data <- data %>%
+  filter(!is.na(Year)) %>%
+  mutate(across(where(is.character), as.numeric))
+ts_data <- ts(cleaned_data$`Annual anomaly`, start = 1880, end = 2020, frequency = 1)
+```
+
+```{r}
+plot(ts_data)
+adf.test(ts_data)
+ts_diff <- diff(ts_data)
+adf.test(ts_diff)
+plot(ts_diff)
+```
+
+```{r}
+cleaned_data$Year2 <- cleaned_data$Year^2
+cleaned_data$Year3 <- cleaned_data$Year^3
+poly_model <- lm(`Annual anomaly` ~ Year + Year2 + Year3, data = cleaned_data)
+summary(poly_model)
+residuals_poly <- residuals(poly_model)
+ts_resid <- ts(residuals_poly, start = 1880, frequency = 1)
+plot(ts_resid)
+adf.test(ts_resid)
+arma_model <- auto.arima(ts_resid, stationary = TRUE, seasonal = FALSE)
+summary(arma_model)
+future_years <- data.frame(
+  Year = 2024:2030,
+  Year2 = (2024:2030)^2,
+  Year3 = (2024:2030)^3
+)
+trend_forecast <- predict(poly_model, newdata = future_years)
+resid_forecast <- forecast(arma_model, h = 7)$mean
+combined_forecast <- trend_forecast + resid_forecast
+historical_years <- cleaned_data$Year
+forecast_years <- 2024:2030
+full_years <- c(historical_years, forecast_years)
+full_values <- c(fitted(poly_model) + arma_model$fitted, combined_forecast)
+plot(full_years, full_values, type = "l", col = "blue")
+lines(cleaned_data$Year, cleaned_data$`Annual anomaly`)
+```
+
+```{r}
+arima_model <- auto.arima(ts_data)
+summary(arima_model)
+autoplot(arima_model)
+autoplot(forecast(arima_model, h = 10))
+```
+
+```{r}
+ets_model <- ets(ts_data)
+summary(ets_model)
+autoplot(ets_model)
+autoplot(forecast(ets_model, h = 10))
+```
+
+```{r}
+gam_data <- cleaned_data %>% select(Year, Anomaly = `Annual anomaly`)
+gam_model <- gam(Anomaly ~ s(Year), data = gam_data)
+summary(gam_model)
+ggplot(gam_data, aes(x = Year, y = Anomaly)) +
+  geom_line(aes(y = fitted(gam_model)))
+future_years <- tibble(Year = 2021:2030)
+future_preds <- predict(gam_model, newdata = future_years, se.fit = TRUE)
+future_forecast <- future_years %>%
+  mutate(
+    fit = future_preds$fit,
+    lower = fit - 2 * future_preds$se.fit,
+    upper = fit + 2 * future_preds$se.fit
+  )
+combined_data <- bind_rows(
+  gam_data %>% mutate(type = "historical"),
+  future_forecast %>% rename(Anomaly = fit) %>% mutate(type = "forecast")
+)
+ggplot(combined_data, aes(x = Year, y = Anomaly)) +
+  geom_point(data = filter(combined_data, type == "historical")) +
+  geom_line(size = 1) +
+  geom_ribbon(
+    data = filter(combined_data, type == "forecast"),
+    aes(x = Year, ymin = lower, ymax = upper),
+    alpha = 0.2, inherit.aes = FALSE
+  )
+```
+
+```{r}
+checkresiduals(arima_model)
+checkresiduals(ets_model)
+```
